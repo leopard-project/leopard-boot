@@ -1076,6 +1076,36 @@ char new_stack[STACK_SIZE]; // 你不配当主播！滚吧！* 哭 *
 typedef void (*__attribute__((sysv_abi)) Kernel)(const struct FrameBufferConfig *, struct EFI_SYSTEM_TABLE *,
                                                  BOOT_CONFIG *);
 
+#define BOOT_ROOT_BINDING_PATH L"\\EFI\\XJ380\\root.bin"
+
+static EFI_STATUS read_boot_root_binding(struct EFI_FILE_PROTOCOL *root,
+                                         XJ_ROOT_BINDING *binding, int *present)
+{
+    if (root == NULL || binding == NULL || present == NULL) return EFI_INVALID_PARAMETER;
+    *present = 0;
+    xmemset(binding, 0, sizeof(*binding));
+
+    struct EFI_FILE_PROTOCOL *file = NULL;
+    EFI_STATUS status = open_boot_file(root, BOOT_ROOT_BINDING_PATH, &file);
+    if (status == EFI_NOT_FOUND) return EFI_SUCCESS;
+    if (EFI_ERROR(status)) return status;
+    *present = 1;
+
+    UINTN size = 0;
+    status = boot_file_size(file, &size);
+    if (!EFI_ERROR(status) && size != sizeof(*binding)) status = EFI_COMPROMISED_DATA;
+    if (!EFI_ERROR(status))
+    {
+        UINTN read_size = sizeof(*binding);
+        status = file->Read(file, &read_size, binding->bytes);
+        if (!EFI_ERROR(status) && read_size != sizeof(*binding)) status = EFI_DEVICE_ERROR;
+    }
+    EFI_STATUS close_status = file->Close(file);
+    if (EFI_ERROR(status)) return status;
+    if (EFI_ERROR(close_status)) return close_status;
+    return xj_root_binding_valid(binding) ? EFI_SUCCESS : EFI_COMPROMISED_DATA;
+}
+
 EFI_STATUS efi_main(EFI_HANDLE ImageHandle, struct EFI_SYSTEM_TABLE *SystemTable)
 {
     write_serial_string("\n");
@@ -1109,6 +1139,8 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, struct EFI_SYSTEM_TABLE *SystemTable
     void                     *installer_root_buffer = NULL;
     void                     *system_payload_buffer = NULL;
     int                       installer_mode = 0;
+    XJ_ROOT_BINDING           root_binding;
+    int                       bound_root_mode = 0;
 
     // 引导内核
     status = SFSP->OpenVolume(SFSP, &root);
@@ -1166,6 +1198,15 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, struct EFI_SYSTEM_TABLE *SystemTable
                 ;
         }
 
+        status = read_boot_root_binding(root, &root_binding, &bound_root_mode);
+        if (EFI_ERROR(status))
+        {
+            write_serial_string("Root binding invalid. Stop.\n");
+            while (1)
+                ;
+        }
+        if (bound_root_mode) write_serial_string("Root binding found.\n");
+
         status = read_boot_file(root, L"\\system\\kernel.krl", &kernel_buffer, &kernel_size);
 
         /* 参数化启动：\system\boot.conf 的 init= / flags=，以及 live 介质的 live-root.img */
@@ -1179,6 +1220,14 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, struct EFI_SYSTEM_TABLE *SystemTable
         puts(L"XJ380 does not boot properly. Please visit "
              L"https://xingjisoft.com/os/xj380/error. Error code: KERNEL_NOT_FOUND");
         write_serial_string("Kernel Read Failed. Stop.\n");
+        while (1)
+            ;
+    }
+
+    if (bound_root_mode && !xj_root_binding_kernel_matches(&root_binding, kernel_buffer, kernel_size))
+    {
+        puts(L"XJ380 boot kernel does not match root binding. Error code: ROOT_KERNEL_MISMATCH");
+        write_serial_string("Root binding kernel length or CRC32C mismatch. Stop.\n");
         while (1)
             ;
     }
@@ -1245,6 +1294,11 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, struct EFI_SYSTEM_TABLE *SystemTable
         write_serial_string("PID1 init from boot.conf: ");
         write_serial_string(BootConfig->init);
         write_serial_string("\n");
+    }
+    if (bound_root_mode)
+    {
+        xmemcpy(&BootConfig->root_binding, &root_binding, sizeof(root_binding));
+        BootConfig->boot_flags |= BOOT_FLAG_BOUND_ROOT;
     }
     if (installer_mode || installer_root_buffer != NULL)
     {
