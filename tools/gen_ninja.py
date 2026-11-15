@@ -37,7 +37,7 @@ def main():
     L += [edge, "", "build all: phony out/BOOTX64.efi", "default all", ""]
 
     # xbps 打包：引导器装到 EFI/BOOT/BOOTX64.EFI（gzip 压缩，zstd 会踩内核懒分配 bug）
-    boot_pkg = "OpenXSBoot-2.1.0_1"
+    boot_pkg = "OpenXSBoot-2.1.1_2"
     pkg_cmd = ("rm -rf .pkg && mkdir -p .pkg/EFI/BOOT && cp out/BOOTX64.efi .pkg/EFI/BOOT/BOOTX64.EFI && "
                "cd out && xbps-create --compression gzip -A x86_64 "
                f"-n {boot_pkg} -s 'Leopard UEFI bootloader' ../.pkg")

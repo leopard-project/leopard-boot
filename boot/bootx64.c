@@ -754,10 +754,11 @@ static EFI_STATUS read_boot_file(struct EFI_FILE_PROTOCOL *root, CHAR16 *path, v
  * 引导器只认这两个键；其余键忽略并写串口日志，不改变启动流程。
  */
 #define BOOT_CONF_PATH      L"\\system\\boot.conf"
-#define BOOT_LIVE_ROOT_PATH L"\\system\\live-root.img"
+#define BOOT_INITRD_PATH    L"\\system\\live-root.img" /* legacy filename, now a generic initrd */
 #define BOOT_CONF_MAX       4096
 
-static char   BootConfInit[BOOT_CONFIG_INIT_MAX];
+static char   BootConfCmdline[BOOT_CONFIG_CMDLINE_MAX];
+static UINTN  BootConfCmdlineLen = 0;
 static UINT64 BootConfFlags = 0;
 
 static int boot_conf_is_space(char c)
@@ -833,16 +834,15 @@ static void boot_conf_apply(char *line)
 
     if (boot_conf_key_is(p, "init"))
     {
-        if (vlen > 0 && vlen < BOOT_CONFIG_INIT_MAX)
+        if (vlen > 0)
         {
-            strcpy(BootConfInit, value);
             write_serial_string("boot.conf: init=");
-            write_serial_string(BootConfInit);
+            write_serial_string(value);
             write_serial_string("\n");
         }
         else
         {
-            write_serial_string("boot.conf: init ignored (empty or too long)\n");
+            write_serial_string("boot.conf: init ignored (empty)\n");
         }
     }
     else if (boot_conf_key_is(p, "flags"))
@@ -872,6 +872,13 @@ static void boot_conf_load(struct EFI_FILE_PROTOCOL *root)
     text[size] = '\0';
     free(buffer);
 
+    /* Keep the raw text as the variable-length kernel cmdline; the parse
+       below mutates text in place, so copy before parsing. */
+    if (size + 1 > BOOT_CONFIG_CMDLINE_MAX) size = BOOT_CONFIG_CMDLINE_MAX - 1;
+    text[size] = '\0';
+    xmemcpy(BootConfCmdline, text, size + 1);
+    BootConfCmdlineLen = size + 1;
+
     char *line = text;
     while (*line != '\0')
     {
@@ -889,18 +896,18 @@ static void boot_conf_load(struct EFI_FILE_PROTOCOL *root)
     write_serial_string("boot.conf loaded.\n");
 }
 
-/* live 介质：\system\live-root.img 存在就整包载入，置 BOOT_FLAG_LIVE_ROOT 交内核解包到 tmpfs。 */
-static int boot_load_live_root(struct EFI_FILE_PROTOCOL *root, void **out_buffer, UINTN *out_size)
+/* initrd：\system\live-root.img 存在就整包载入，置 BOOT_FLAG_INITRD 交内核解包到 tmpfs。 */
+static int boot_load_initrd(struct EFI_FILE_PROTOCOL *root, void **out_buffer, UINTN *out_size)
 {
-    if (EFI_ERROR(boot_file_exists(root, BOOT_LIVE_ROOT_PATH))) return 0;
+    if (EFI_ERROR(boot_file_exists(root, BOOT_INITRD_PATH))) return 0;
 
-    EFI_STATUS status = read_boot_file(root, BOOT_LIVE_ROOT_PATH, out_buffer, out_size);
+    EFI_STATUS status = read_boot_file(root, BOOT_INITRD_PATH, out_buffer, out_size);
     if (EFI_ERROR(status))
     {
-        write_serial_string("Live root image read failed, booting disk root.\n");
+        write_serial_string("Initrd image read failed, booting disk root.\n");
         return 0;
     }
-    write_serial_string("Live root pak found.\n");
+    write_serial_string("Initrd image found.\n");
     return 1;
 }
 
@@ -1134,10 +1141,8 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, struct EFI_SYSTEM_TABLE *SystemTable
     struct EFI_FILE_PROTOCOL *root;
     UINTN                     kernel_size   = 0;
     void                     *kernel_buffer = NULL;
-    UINTN                     installer_root_size = 0;
-    UINTN                     system_payload_size = 0;
-    void                     *installer_root_buffer = NULL;
-    void                     *system_payload_buffer = NULL;
+    UINTN                     initrd_size = 0;
+    void                     *initrd_buffer = NULL;
     int                       installer_mode = 0;
     XJ_ROOT_BINDING           root_binding;
     int                       bound_root_mode = 0;
@@ -1165,22 +1170,11 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, struct EFI_SYSTEM_TABLE *SystemTable
         write_serial_string("Installer kernel found.\n");
         boot_status("Loading installer payloads");
 
-        status = read_boot_file(root, L"\\installer\\installer-root.pak", &installer_root_buffer,
-                                &installer_root_size);
+        status = read_boot_file(root, L"\\installer\\installer-root.pak", &initrd_buffer, &initrd_size);
         if (EFI_ERROR(status))
         {
             puts(L"XJ380 installer payload is missing. Error code: INSTALLER_ROOT_NOT_FOUND");
             write_serial_string("Installer root payload read failed. Stop.\n");
-            while (1)
-                ;
-        }
-
-        status = read_boot_file(root, L"\\installer\\system-payload.pak", &system_payload_buffer,
-                                &system_payload_size);
-        if (EFI_ERROR(status))
-        {
-            puts(L"XJ380 installer payload is missing. Error code: SYSTEM_PAYLOAD_NOT_FOUND");
-            write_serial_string("System payload read failed. Stop.\n");
             while (1)
                 ;
         }
@@ -1211,8 +1205,8 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, struct EFI_SYSTEM_TABLE *SystemTable
 
         /* 参数化启动：\system\boot.conf 的 init= / flags=，以及 live 介质的 live-root.img */
         boot_conf_load(root);
-        if (boot_load_live_root(root, &installer_root_buffer, &installer_root_size))
-            BootMenuFlags |= BOOT_FLAG_LIVE_ROOT;
+        if (boot_load_initrd(root, &initrd_buffer, &initrd_size))
+            BootMenuFlags |= BOOT_FLAG_INITRD;
     }
 
     if (EFI_ERROR(status))
@@ -1283,29 +1277,25 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, struct EFI_SYSTEM_TABLE *SystemTable
     boot_status("Loading ACPI");
 
     BOOT_CONFIG *BootConfig;
-    BootConfig = malloc(sizeof(BOOT_CONFIG)) + 0xFFFF800000000000;
-    xmemset(BootConfig, 0, sizeof(BOOT_CONFIG));
+    UINTN        boot_config_bytes = sizeof(BOOT_CONFIG) + BootConfCmdlineLen;
+    BootConfig = malloc(boot_config_bytes) + 0xFFFF800000000000;
+    xmemset(BootConfig, 0, boot_config_bytes);
 
-    BootConfig->is_qemu = 0;
-    BootConfig->boot_flags = BootMenuFlags | BootConfFlags;
-    if (BootConfInit[0] != '\0')
-    {
-        strcpy(BootConfig->init, BootConfInit);
-        write_serial_string("PID1 init from boot.conf: ");
-        write_serial_string(BootConfig->init);
-        write_serial_string("\n");
-    }
+    BootConfig->layout = BOOT_CONFIG_LAYOUT;
+    BootConfig->boot_flags = (UINT32)(BootMenuFlags | BootConfFlags);
+    BootConfig->cmdline_size = (UINT32)BootConfCmdlineLen;
+    if (BootConfCmdlineLen != 0)
+        xmemcpy(BootConfig->cmdline, BootConfCmdline, BootConfCmdlineLen);
     if (bound_root_mode)
     {
         xmemcpy(&BootConfig->root_binding, &root_binding, sizeof(root_binding));
         BootConfig->boot_flags |= BOOT_FLAG_BOUND_ROOT;
     }
-    if (installer_mode || installer_root_buffer != NULL)
+    if (installer_mode || initrd_buffer != NULL)
     {
-        BootConfig->installer_root_pak = (UINT64)installer_root_buffer;
-        BootConfig->installer_root_pak_size = (UINT64)installer_root_size;
-        BootConfig->system_payload_pak = (UINT64)system_payload_buffer;
-        BootConfig->system_payload_pak_size = (UINT64)system_payload_size;
+        BootConfig->initrd_phys = (UINT64)initrd_buffer;
+        BootConfig->initrd_size = (UINT64)initrd_size;
+        BootConfig->boot_flags |= BOOT_FLAG_INITRD;
     }
 
     // 获取RSDP
@@ -1330,7 +1320,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, struct EFI_SYSTEM_TABLE *SystemTable
                 write_serial_string("XSDT Address: ");
                 write_serial_hex(AcpiRsdp->XsdtAddr);
                 write_serial_string("\n");
-                BootConfig->is_qemu = check_qemu(AcpiRsdp->OEMID);
+                if (check_qemu(AcpiRsdp->OEMID)) BootConfig->boot_flags |= BOOT_FLAG_QEMU;
 
                 ACPI_TABLE_HEADER *XSDT              = (ACPI_TABLE_HEADER *)(AcpiRsdp->XsdtAddr); // 指向XSDT的指针
                 UINT64            *AcpiTableEntryPtr = (UINT64 *)(XSDT + 1); // 指向XSDT后面的其他SDT的地址的指针
@@ -1435,12 +1425,6 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, struct EFI_SYSTEM_TABLE *SystemTable
                                               ) *
                                              sizeof(UINT64));
         }
-    }
-
-    for (int i = 0; i < 256; i++)
-    {
-        BootConfig->temp_stack[i] = malloc(STACK_SIZE) + 0xFFFF800000000000;
-        xmemset(BootConfig->temp_stack[i],0,STACK_SIZE);
     }
 
     GetMMP(&BootConfig->MemoryMap);

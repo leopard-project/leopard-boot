@@ -21,19 +21,21 @@ UEFI bootloader subtree. Builds `out/BOOTX64.efi`, gathers firmware state, loads
 - Keep boot-only helpers here. Kernel logic belongs in `kernel/`, not in the EFI loader.
 
 ## BOOT.CONF / LIVE ROOT (install-closure additions)
-- `\system\boot.conf` is parsed by `boot_conf_load()` before `BOOT_CONFIG` is filled. Recognised keys:
-  `init=<path>` (copied into `BOOT_CONFIG.init`, `BOOT_CONFIG_INIT_MAX` bytes; empty ⇒ kernel falls back to
-  `/system/leopard/leopard-rc.elf`) and `flags=<dec|0xhex>` (OR-ed into `BOOT_CONFIG.boot_flags`).
+- `\system\boot.conf` is parsed by `boot_conf_load()` before `BOOT_CONFIG` is filled. The raw text is copied
+  into the variable-length `BOOT_CONFIG.cmdline` tail; the kernel parses `init=<path>` (empty/missing ⇒
+  `/system/leopard/leopard-rc.elf`) and recognizes `flags=<dec|0xhex>` (also OR-ed into `BOOT_CONFIG.boot_flags`).
   Unknown keys are ignored and logged on serial; `#` starts a comment.
-- `\system\live-root.img` is probed by `boot_load_live_root()`; when present it sets `BOOT_FLAG_LIVE_ROOT`
-  and hands the buffer to the kernel as `installer_root_pak` (live root / installer payload).
-- `BOOT_CONFIG` layout must stay in sync with `OpenXSKernel/include/efi/boot.h`; the kernel reads exactly
-  `sizeof(BOOT_CONFIG)` bytes from the loader's allocation, so any field added here must be added there too.
+- `\system\live-root.img` (legacy filename) is probed by `boot_load_initrd()`; when present it sets
+  `BOOT_FLAG_INITRD` and hands the buffer to the kernel as `initrd_phys`/`initrd_size` (generic initrd).
+- `BOOT_CONFIG` layout must stay in sync with `OpenXSKernel/include/efi/boot.h`; both sides carry the same
+  `sizeof`/`offsetof` static assertions. The kernel also validates `BOOT_CONFIG.layout` and halts on mismatch.
+- The kernel keeps a pointer into the bootloader's `BOOT_CONFIG` allocation for the variable `cmdline` tail;
+  do not free or reuse that UEFI pool allocation before/after handoff.
 
 ## PACKAGING
 ```bash
 python3 tools/gen_ninja.py
-ninja -f build.ninja pack     # → out/OpenXSBoot-2.1.0_1.x86_64.xbps (installs EFI/BOOT/BOOTX64.EFI)
+ninja -f build.ninja pack     # → out/OpenXSBoot-2.1.1_2.x86_64.xbps (installs EFI/BOOT/BOOTX64.EFI)
 ```
 The `OpenXSBoot` package is what puts the bootloader on an installed disk; without it the target partition
 lacks the `EFI/BOOT/BOOTX64.EFI` marker and `mount_root` will not select it.
