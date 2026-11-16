@@ -27,7 +27,7 @@ UEFI bootloader subtree. Builds `out/BOOTX64.efi`, gathers firmware state, loads
   Unknown keys are ignored and logged on serial; `#` starts a comment.
 - `\system\live-root.img` (legacy filename) is probed by `boot_load_initrd()`; when present it sets
   `BOOT_FLAG_INITRD` and hands the buffer to the kernel as `initrd_phys`/`initrd_size` (generic initrd).
-- `BOOT_CONFIG` layout must stay in sync with `OpenXSKernel/include/efi/boot.h`; both sides carry the same
+- `BOOT_CONFIG` layout must stay in sync with `leopard-xsk/include/efi/boot.h`; both sides carry the same
   `sizeof`/`offsetof` static assertions. The kernel also validates `BOOT_CONFIG.layout` and halts on mismatch.
 - The kernel keeps a pointer into the bootloader's `BOOT_CONFIG` allocation for the variable `cmdline` tail;
   do not free or reuse that UEFI pool allocation before/after handoff.
@@ -35,9 +35,9 @@ UEFI bootloader subtree. Builds `out/BOOTX64.efi`, gathers firmware state, loads
 ## PACKAGING
 ```bash
 python3 tools/gen_ninja.py
-ninja -f build.ninja pack     # → out/OpenXSBoot-2.1.1_2.x86_64.xbps (installs EFI/BOOT/BOOTX64.EFI)
+ninja -f build.ninja pack     # → out/leopard-boot-2.1.1_2.x86_64.xbps (installs EFI/BOOT/BOOTX64.EFI)
 ```
-The `OpenXSBoot` package is what puts the bootloader on an installed disk; without it the target partition
+The `leopard-boot` package is what puts the bootloader on an installed disk; without it the target partition
 lacks the `EFI/BOOT/BOOTX64.EFI` marker and `mount_root` will not select it.
 
 

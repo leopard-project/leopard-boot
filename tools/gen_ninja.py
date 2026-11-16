@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""OpenXSBoot 独立构建：生成只产出引导 out/BOOTX64.efi 的 build.ninja。"""
+"""leopard-boot 独立构建：生成只产出引导 out/BOOTX64.efi 的 build.ninja。"""
 import os
 from pathlib import Path
 
@@ -26,7 +26,7 @@ def main():
     headers = [p.relative_to(ROOT) for p in find("boot/include", (".h", ".hpp"))]
     hstr = " ".join(esc(h) for h in headers)
 
-    L = ["# OpenXSBoot 专用：只构建 UEFI 引导", "ninja_required_version = 1.10",
+    L = ["# leopard-boot 专用：只构建 UEFI 引导", "ninja_required_version = 1.10",
          f"cc = {cc}", f"boot_c_flags = {boot_flags}", "",
          "rule boot",
          "  command = mkdir -p $$(dirname $out) && $cc $boot_c_flags -o $out $in", ""]
@@ -37,7 +37,7 @@ def main():
     L += [edge, "", "build all: phony out/BOOTX64.efi", "default all", ""]
 
     # xbps 打包：引导器装到 EFI/BOOT/BOOTX64.EFI（gzip 压缩，zstd 会踩内核懒分配 bug）
-    boot_pkg = "OpenXSBoot-2.1.1_2"
+    boot_pkg = "leopard-boot-2.1.1_2"
     pkg_cmd = ("rm -rf .pkg && mkdir -p .pkg/EFI/BOOT && cp out/BOOTX64.efi .pkg/EFI/BOOT/BOOTX64.EFI && "
                "cd out && xbps-create --compression gzip -A x86_64 "
                f"-n {boot_pkg} -s 'Leopard UEFI bootloader' ../.pkg")
